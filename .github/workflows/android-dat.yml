@@ -64,6 +64,7 @@ jobs:
           npm install
           npx cap add android
           cp -r android-res/. android/app/src/main/res/
+          bash patch-android.sh
           npx cap sync android
           sed -i "s/versionCode 1/versionCode ${{ github.run_number }}/; s/versionName \"1.0\"/versionName \"${{ steps.ver.outputs.v }}\"/" android/app/build.gradle
           grep -n "versionCode\|versionName" android/app/build.gradle
