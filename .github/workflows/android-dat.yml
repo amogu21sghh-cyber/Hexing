@@ -1,11 +1,7 @@
-# Сборка Android-приложения из архива hexstrat-vX.Y.Z.dat (это zip, переименованный в .dat), лежащего в корне репозитория.
-# Берётся самый свежий архив по номеру версии. Запускается при загрузке нового .dat и вручную: Actions -> «Android APK» -> Run workflow.
-# Файлы: внизу страницы запуска, раздел Artifacts (подробнее в RELEASE.md внутри архива).
 name: Android APK
 
 on:
   push:
-    paths: ['hexstrat-*.dat']
   workflow_dispatch:
 
 jobs:
@@ -22,18 +18,20 @@ jobs:
       KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          sparse-checkout: |
-            hexstrat-*.dat
-          sparse-checkout-cone-mode: false
 
-      - name: Распаковка свежего архива
+      - name: Unpack archive
         working-directory: .
         run: |
-          DAT=$(ls hexstrat-v*.dat | sort -V | tail -1)
-          echo "Берём архив: $DAT"
+          echo "Files in repo root:"; ls -la
+          DAT=$(ls hexstrat-*.dat hexstrat-*.zip 2>/dev/null | sort -V | tail -1 || true)
+          if [ -z "$DAT" ]; then echo "::error::No hexstrat-*.dat or hexstrat-*.zip in repo root"; exit 1; fi
+          echo "Using archive: $DAT"; file "$DAT"; ls -la "$DAT"
           mkdir src
-          unzip -q "$DAT" -d src
+          if ! unzip -q "$DAT" -d src; then
+            echo "::error::Cannot unzip $DAT"
+            exit 1
+          fi
+          test -f src/package.json || { echo "::error::No package.json at archive root"; ls src | head; exit 1; }
           ls src | head -30
 
       - uses: actions/setup-node@v4
@@ -45,20 +43,20 @@ jobs:
           distribution: temurin
           java-version: 21
 
-      - name: Версия игры
+      - name: Game version
         id: ver
         run: echo "v=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
 
-      - name: Шрифты (вшиваются в игру, интернет не нужен)
+      - name: Fonts
         run: npm install --no-save @fontsource/fira-sans @fontsource/forum
 
-      - name: Сборка игры в один файл
+      - name: Build game
         run: node build.mjs
 
-      - name: Проверка логики (быстрая)
+      - name: Tests
         run: node test/starts.mjs && node test/mods.mjs
 
-      - name: Проект Android (Capacitor)
+      - name: Android project (Capacitor)
         working-directory: src/app
         run: |
           mkdir -p www
@@ -70,12 +68,12 @@ jobs:
           sed -i "s/versionCode 1/versionCode ${{ github.run_number }}/; s/versionName \"1.0\"/versionName \"${{ steps.ver.outputs.v }}\"/" android/app/build.gradle
           grep -n "versionCode\|versionName" android/app/build.gradle
 
-      - name: Отладочный ключ (для проверочной сборки)
+      - name: Debug key
         run: |
           mkdir -p ~/.android
           cp app/debug.keystore ~/.android/debug.keystore
 
-      - name: Сборка отладочного APK
+      - name: Build debug APK
         working-directory: src/app/android
         run: |
           chmod +x gradlew
@@ -87,7 +85,7 @@ jobs:
           path: src/app/android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
 
-      - name: Релизный APK для RuStore (подпись вашим ключом)
+      - name: Signed release APK for RuStore
         if: env.KEYSTORE_B64 != ''
         working-directory: src/app/android
         run: |
@@ -100,10 +98,9 @@ jobs:
           APK=app/build/outputs/apk/release/app-release.apk
           test -f "$APK"
           cp "$APK" "$RUNNER_TEMP/hexarchy-${{ steps.ver.outputs.v }}.apk"
-          echo "Подпись релизного APK (отпечаток сертификата должен совпадать от версии к версии):"
           "$ANDROID_HOME"/build-tools/$(ls "$ANDROID_HOME"/build-tools | sort -V | tail -1)/apksigner verify --print-certs "$APK" | grep -E "SHA-256|Signer #1 certificate DN"
 
-      - name: Файл релиза
+      - name: Upload release
         if: env.KEYSTORE_B64 != ''
         uses: actions/upload-artifact@v4
         with:
